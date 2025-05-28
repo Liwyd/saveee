@@ -142,7 +142,3 @@ class NeuralRecommender:
         self.embeddings = checkpoint['embeddings']
 
 
-# Example usage:
-if __name__ == "__main__":
-    recommender = NeuralRecommender("music_embeddings.lmdb", epochs=5)
-    print("Top similar items to index 42:", recommender.recommend(42))
