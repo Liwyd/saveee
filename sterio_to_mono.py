@@ -62,7 +62,7 @@ for item in results:
         waveform_data.append(item)
 
 # پردازش batch در GPU
-BATCH_SIZE = 16  # با توجه به VRAM می‌تونی بیشتر یا کمترش کنی
+BATCH_SIZE = 64  # با توجه به VRAM می‌تونی بیشتر یا کمترش کنی
 
 for i in tqdm(range(0, len(waveform_data), BATCH_SIZE), desc="Extracting embeddings"):
     batch = waveform_data[i:i + BATCH_SIZE]
