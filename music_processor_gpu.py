@@ -1,5 +1,6 @@
 import os
 import torch
+import torch.multiprocessing
 import torchaudio
 import ffmpeg
 import lmdb
@@ -13,6 +14,9 @@ from telegram.error import TelegramError
 import logging
 import numpy as np
 from typing import List, Tuple, Optional
+
+# Set multiprocessing start method
+torch.multiprocessing.set_start_method('spawn', force=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,17 +34,35 @@ CHUNK_SIZE = 20 * 1024 * 1024  # 20MB chunks for large files
 class MusicProcessor:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if self.device == "cuda":
+            torch.cuda.init()  # Initialize CUDA context early
+        self.processor = None
+        self.model = None
         self._init_models()
 
     def _init_models(self):
         try:
-            self.processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
-            self.model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(self.device)
-            self.model.eval()
-            logging.info("Models loaded successfully")
+            # Only initialize models if they haven't been initialized
+            if self.processor is None or self.model is None:
+                self.processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
+                self.model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(self.device)
+                self.model.eval()
+                logging.info("Models loaded successfully")
         except Exception as e:
             logging.error(f"Failed to load models: {e}")
             raise
+
+    def __getstate__(self):
+        # Don't pickle the models
+        state = self.__dict__.copy()
+        state['processor'] = None
+        state['model'] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        # Reinitialize models when unpickling
+        self._init_models()
 
     def convert_to_wav(self, input_path: str) -> Optional[str]:
         output_path = f"{input_path}.temp.wav"
@@ -76,7 +98,6 @@ class MusicProcessor:
             logging.error(f"Embedding extraction failed for {audio_path}: {e}")
             return None
 
-    @delayed
     def process_file(self, file_path: str) -> Optional[Tuple[str, np.ndarray]]:
         if not file_path.lower().endswith(SUPPORTED_FORMATS):
             return None
@@ -115,11 +136,13 @@ class MusicProcessor:
         return file_paths
 
     def create_embeddings(self, file_paths: List[str]) -> List[Tuple[str, np.ndarray]]:
-        # If CUDA is used, multiprocessing with dask might cause issues.
-        # You might want to switch to threading or sequential processing for GPU.
-        tasks = [self.process_file(f) for f in file_paths]
-        results = compute(*tasks, scheduler="processes")
-        return [r for r in results if r is not None]
+        # Process files sequentially to avoid pickling issues
+        results = []
+        for file_path in tqdm(file_paths, desc="Processing files"):
+            result = self.process_file(file_path)
+            if result is not None:
+                results.append(result)
+        return results
 
     def store_embeddings(self, data: List[Tuple[str, np.ndarray]], lmdb_path: str = "music_embeddings.lmdb") -> None:
         try:
@@ -215,5 +238,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-        
