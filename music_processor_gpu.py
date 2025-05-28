@@ -13,6 +13,7 @@ from telegram.error import TelegramError
 from pathlib import Path
 from typing import List, Tuple, Optional
 import logging
+import numpy as np
 
 # Configure logging
 logging.basicConfig(
