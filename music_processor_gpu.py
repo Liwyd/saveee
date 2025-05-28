@@ -7,7 +7,6 @@ import lmdb
 import pickle
 import asyncio
 from tqdm import tqdm
-from dask import delayed, compute
 from transformers import Wav2Vec2Processor, Wav2Vec2Model
 from telegram import Bot
 from telegram.error import TelegramError
@@ -35,14 +34,16 @@ class MusicProcessor:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         if self.device == "cuda":
-            torch.cuda.init()  # Initialize CUDA context early
+            torch.cuda.init()
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
         self.processor = None
         self.model = None
         self._init_models()
+        self.max_chunk_size = 30  # seconds of audio per chunk
+        self.sample_rate = 16000
 
     def _init_models(self):
         try:
-            # Only initialize models if they haven't been initialized
             if self.processor is None or self.model is None:
                 self.processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
                 self.model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(self.device)
@@ -52,57 +53,56 @@ class MusicProcessor:
             logging.error(f"Failed to load models: {e}")
             raise
 
-    def __getstate__(self):
-        # Don't pickle the models
-        state = self.__dict__.copy()
-        state['processor'] = None
-        state['model'] = None
-        return state
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-        # Reinitialize models when unpickling
-        self._init_models()
-
-    def convert_to_wav(self, input_path: str) -> Optional[str]:
-        output_path = f"{input_path}.temp.wav"
-        try:
-            (
-                ffmpeg.input(input_path)
-                .output(output_path, format='wav', acodec='pcm_s16le', ac=1, ar='16000')
-                .run(quiet=True, overwrite_output=True)
-            )
-            return output_path
-        except ffmpeg.Error as e:
-            logging.error(f"FFmpeg error for {input_path}: {e.stderr.decode() if e.stderr else str(e)}")
-            return None
-        except Exception as e:
-            logging.error(f"Conversion error for {input_path}: {e}")
-            return None
+    def _process_chunk(self, waveform: torch.Tensor) -> torch.Tensor:
+        """Process a single chunk of audio"""
+        inputs = self.processor(
+            waveform.squeeze(), 
+            sampling_rate=self.sample_rate, 
+            return_tensors="pt"
+        ).input_values.to(self.device)
+        
+        with torch.no_grad():
+            outputs = self.model(inputs)
+        return outputs.last_hidden_state.mean(dim=1).squeeze()
 
     def extract_embedding(self, audio_path: str) -> Optional[np.ndarray]:
         try:
             waveform, sr = torchaudio.load(audio_path)
             
-            # Convert stereo to mono by averaging channels if needed
             if waveform.dim() > 1 and waveform.shape[0] > 1:
                 waveform = torch.mean(waveform, dim=0, keepdim=True)
                 
-            if sr != 16000:
-                waveform = torchaudio.functional.resample(waveform, orig_freq=sr, new_freq=16000)
+            if sr != self.sample_rate:
+                waveform = torchaudio.functional.resample(waveform, orig_freq=sr, new_freq=self.sample_rate)
 
-            # Ensure the waveform is 2D (batch, samples)
-            if waveform.dim() == 1:
-                waveform = waveform.unsqueeze(0)
-                
-            inputs = self.processor(waveform.squeeze(), sampling_rate=16000, return_tensors="pt").input_values.to(self.device)
-
-            with torch.no_grad():
-                outputs = self.model(inputs)
+            chunk_samples = self.sample_rate * self.max_chunk_size
+            total_samples = waveform.shape[-1]
             
-            # Mean pooling across time steps
-            embedding = outputs.last_hidden_state.mean(dim=1).squeeze().cpu().numpy()
-            return embedding
+            if total_samples > chunk_samples:
+                chunks = []
+                for i in range(0, total_samples, chunk_samples):
+                    chunk = waveform[..., i:i+chunk_samples]
+                    if chunk.shape[-1] < chunk_samples // 4:
+                        continue
+                    chunk_embedding = self._process_chunk(chunk)
+                    chunks.append(chunk_embedding)
+                
+                if chunks:
+                    final_embedding = torch.mean(torch.stack(chunks), dim=0).cpu().numpy()
+                else:
+                    return None
+            else:
+                final_embedding = self._process_chunk(waveform).cpu().numpy()
+            
+            return final_embedding
+            
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e):
+                logging.warning(f"Reducing chunk size for {audio_path} due to memory constraints")
+                self.max_chunk_size = max(10, self.max_chunk_size // 2)
+                return self.extract_embedding(audio_path)
+            logging.error(f"Embedding extraction failed for {audio_path}: {e}")
+            return None
         except Exception as e:
             logging.error(f"Embedding extraction failed for {audio_path}: {e}")
             return None
