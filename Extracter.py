@@ -1,89 +1,102 @@
 import os
-import torch
-import torchaudio
-import ffmpeg
-import lmdb
-import pickle
+import librosa, asyncio
+import numpy as np
+import pandas as pd
+from pydub import AudioSegment
 from tqdm import tqdm
-from dask import delayed, compute
-from transformers import Wav2Vec2Processor, Wav2Vec2Model
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Load Wav2Vec2 model & processor
-processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
-model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(device)
-model.eval()
-
+from telegram import Bot
+from telegram.error import TelegramError
+# sudo apt install ffmpeg
 SUPPORTED_FORMATS = ('.wav', '.mp3', '.flac', '.ogg', '.m4a')
 
-def convert_to_wav(input_path):
-    output_path = input_path + ".temp.wav"
+async def convert_to_wav(path):
+    audio = AudioSegment.from_file(path)
+    wav_path = path + ".temp.wav"
+    audio.export(wav_path, format="wav")
+    return wav_path
+
+async def extract_features(file_path, sr=22050):
     try:
-        ffmpeg.input(input_path).output(output_path, format='wav', acodec='pcm_s16le', ac=1, ar='16000').run(quiet=True, overwrite_output=True)
-        return output_path
+        y, sr = librosa.load(file_path, sr=sr)
+        features = {}
+
+        mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+        for i in range(13):
+            features[f'mfcc_{i}'] = np.mean(mfccs[i])
+
+        chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+        features['chroma_stft_mean'] = np.mean(chroma)
+
+        spec_contrast = librosa.feature.spectral_contrast(y=y, sr=sr)
+        features['spectral_contrast_mean'] = np.mean(spec_contrast)
+
+        tonnetz = librosa.feature.tonnetz(y=librosa.effects.harmonic(y), sr=sr)
+        features['tonnetz_mean'] = np.mean(tonnetz)
+
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        features['tempo'] = tempo[0]
+
+        return features
     except Exception as e:
-        print(f"[FFMPEG ERROR] {input_path} - {e}")
+        print(f"Failed to process {file_path}: {e}")
         return None
 
-def extract_embedding(audio_path):
-    try:
-        waveform, sr = torchaudio.load(audio_path)
-        if sr != 16000:
-            waveform = torchaudio.functional.resample(waveform, orig_freq=sr, new_freq=16000)
-        input_values = processor(waveform.squeeze(), sampling_rate=16000, return_tensors="pt").input_values.to(device)
-        with torch.no_grad():
-            outputs = model(input_values)
-        embedding = outputs.last_hidden_state.mean(dim=1).squeeze().cpu().numpy()
-        return embedding
-    except Exception as e:
-        print(f"[EXTRACT ERROR] {audio_path} - {e}")
-        return None
-
-@delayed
-def process_file(file_path):
-    if not file_path.lower().endswith(SUPPORTED_FORMATS):
-        return None
-
-    wav_path = file_path
-    if not file_path.endswith(".wav"):
-        wav_path = convert_to_wav(file_path)
-        if not wav_path:
-            return None
-
-    embedding = extract_embedding(wav_path)
-    if wav_path != file_path:
-        os.remove(wav_path)  # clean up
-
-    if embedding is not None:
-        return (os.path.basename(file_path), embedding)
-    return None
-
-def collect_all_files(directory):
-    file_paths = []
+async def process_directory(directory):
+    data = []
     for root, _, files in os.walk(directory):
-        for file in files:
-            if file.lower().endswith(SUPPORTED_FORMATS):
-                file_paths.append(os.path.join(root, file))
-    return file_paths
+        for file in tqdm(files, desc="Processing files"):
+            if not file.lower().endswith(SUPPORTED_FORMATS):
+                continue
 
-def store_in_lmdb(data, lmdb_path="music_embeddings.lmdb"):
-    env = lmdb.open(lmdb_path, map_size=1e12)  # Adjust map_size if needed
-    with env.begin(write=True) as txn:
-        for key, embedding in data:
-            txn.put(key.encode('utf-8'), pickle.dumps(embedding))
-    env.sync()
-    env.close()
-    print(f"✅ Saved {len(data)} embeddings to {lmdb_path}")
+            original_path = os.path.join(root, file)
+            temp_path = None
 
-def process_directory(directory, lmdb_path="music_embeddings.lmdb"):
-    all_files = collect_all_files(directory)
-    print(f"Total files to process: {len(all_files)}")
-    tasks = [process_file(f) for f in all_files]
-    results = compute(*tasks, scheduler="processes")
-    results = [r for r in results if r is not None]
-    store_in_lmdb(results, lmdb_path=lmdb_path)
+            if not original_path.endswith(".wav"):
+                temp_path = await convert_to_wav(original_path)
+                path_to_process = temp_path
+            else:
+                path_to_process = original_path
 
+            features = await extract_features(path_to_process)
+            if features:
+                filename = await clerifyNameofFile(file)
+                features['file'] = filename
+                data.append(features)
+
+            if temp_path:
+                os.remove(temp_path)  # clean up
+
+    df = pd.DataFrame(data)
+    df.to_csv("music_emotional_features.csv", index=False)
+    await send_signal_to_telegram("✅ Features saved to music_emotional_features.csv")
+
+async def send_signal_to_telegram(message: str):
+    for chat_id in ["1451599691"]:
+        try:
+            await bot.send_message(chat_id=chat_id, text=message)
+            document = open('music_emotional_features.csv', 'rb')
+            await bot.send_document(chat_id=chat_id, document=document)
+            print(f"Message sent to {chat_id}")
+        except TelegramError as e:
+            print(f"Error sending message to {chat_id}: {e}")
+
+async def clerifyNameofFile(file:str):
+    if ".mp3" in file:
+        return file.replace(".mp3", "")   
+    if ".m4a" in file:
+        return file.replace(".m4a", "")   
+    if ".ogg" in file:
+        return file.replace(".ogg", "")
+    if ".flac" in file:
+        return file.replace(".flac", "")   
+    if ".wav" in file:
+        return file.replace(".wav", "")
+# Example usage
+
+TOKEN = "7929986601:AAFgh1oRiO5mmL3pFlmLnX8Qp2UFVoslHzQ"  #https://t.me/aliAirobot
 if __name__ == "__main__":
+    # input_dir = input("Enter path to music directory: ").strip()
     input_dir = "./musics/"
-    process_directory(input_dir)
+    bot = Bot(token=TOKEN)
+    # process_directory(input_dir)
+    asyncio.run(process_directory(input_dir))
