@@ -7,18 +7,6 @@ save_path = "./musics"
 os.makedirs(save_path, exist_ok=True)
 
 
-def download_soundcloud_playlist(url, path):
-    try:
-        subprocess.run([
-            "scdl",
-            "-l", url,
-            "-o", path,
-            "--onlymp3"
-        ], check=True)
-        print("[+] دانلود کامل شد.")
-    except subprocess.CalledProcessError as e:
-        print(f"[-] خطا در دانلود: {e}")
-
 def download_with_ytdlp(url, path):
     try:
         subprocess.run([
