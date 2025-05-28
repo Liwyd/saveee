@@ -49,7 +49,9 @@ class NeuralRecommender:
 
     def train(self, epochs, lr):
         optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        loss_fn = nn.MSELoss()
+        loss_fn = nn.MSELoss() 
+        #loss func:
+        #morabaat
 
         for epoch in range(epochs):
             total_loss = 0
