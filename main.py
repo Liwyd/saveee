@@ -3,7 +3,7 @@ from recommender import NeuralRecommender  # فرض می‌گیریم کد اص�
 def main():
     lmdb_path = "music_embeddings.lmdb"
     model_path = "recommender.pt"
-    recommender = NeuralRecommender(lmdb_path, model_path=model_path, epochs=5)
+    recommender = NeuralRecommender(lmdb_path, model_path=model_path, epochs=200)
 
     while True:
         track_name = input("Enter track name (or 'exit' to quit): ").strip()
