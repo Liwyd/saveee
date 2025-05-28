@@ -1,14 +1,24 @@
-from neural_recommender import NeuralRecommender
+from recommender import NeuralRecommender  # فرض می‌گیریم کد اصلی توی فایل recommender.py هست
 
+def main():
+    lmdb_path = "music_embeddings.lmdb"
+    model_path = "recommender.pt"
+    recommender = NeuralRecommender(lmdb_path, model_path=model_path, epochs=5)
 
-# Training mode
-# recommender = NeuralRecommender("music_emotional_features.csv", train_model=True, epochs=200)
-# Later... load without training
-# recommender = NeuralRecommender("music_emotional_features.csv", train_model=False)
+    while True:
+        track_name = input("Enter track name (or 'exit' to quit): ").strip()
+        if track_name.lower() == "exit":
+            break
 
-recommender = NeuralRecommender("music_emotional_features.csv", epochs=200)
-similar = recommender.recommend("Arta - Jealous ft koorosh")
+        try:
+            recommendations = recommender.recommend(track_name, top_k=5)
+            print(f"Top similar tracks to '{track_name}':")
+            for idx, name in recommendations:
+                print(f"  - [{idx}] {name}")
+        except ValueError as e:
+            print(f"Error: {e}")
+        except Exception as e:
+            print(f"Unexpected error: {e}")
 
-
-for s in similar:
-    print(s)
+if __name__ == "__main__":
+    main()
