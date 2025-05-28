@@ -83,9 +83,18 @@ class MusicProcessor:
     def extract_embedding(self, audio_path: str) -> Optional[np.ndarray]:
         try:
             waveform, sr = torchaudio.load(audio_path)
+            
+            # Convert stereo to mono by averaging channels if needed
+            if waveform.dim() > 1 and waveform.shape[0] > 1:
+                waveform = torch.mean(waveform, dim=0, keepdim=True)
+                
             if sr != 16000:
                 waveform = torchaudio.functional.resample(waveform, orig_freq=sr, new_freq=16000)
 
+            # Ensure the waveform is 2D (batch, samples)
+            if waveform.dim() == 1:
+                waveform = waveform.unsqueeze(0)
+                
             inputs = self.processor(waveform.squeeze(), sampling_rate=16000, return_tensors="pt").input_values.to(self.device)
 
             with torch.no_grad():
