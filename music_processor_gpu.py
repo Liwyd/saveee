@@ -194,7 +194,7 @@ class TelegramSender:
 
 async def main():
     try:
-        TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+        TELEGRAM_TOKEN = "7929986601:AAFgh1oRiO5mmL3pFlmLnX8Qp2UFVoslHzQ"
         MUSIC_DIR = "./musics/"
 
         processor = MusicProcessor()
@@ -216,36 +216,4 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 
-
-
-async def main():
-    try:
-        TELEGRAM_TOKEN = "7929986601:AAFgh1oRiO5mmL3pFlmLnX8Qp2UFVoslHzQ"
-        MUSIC_DIR = "./musics/"
         
-        # Initialize components
-        processor = MusicProcessor()
-        sender = TelegramSender(TELEGRAM_TOKEN)
-
-        # Process music files
-        logging.info("Starting music processing")
-        audio_files = processor.collect_audio_files(MUSIC_DIR)
-        logging.info(f"Found {len(audio_files)} audio files")
-        
-        embeddings = processor.create_embeddings(audio_files)
-        processor.store_embeddings(embeddings)
-
-        # Send results
-        await sender.send_embeddings("music_embeddings.lmdb")
-        
-        logging.info("Processing completed successfully")
-    except Exception as e:
-        logging.error(f"Fatal error in main process: {e}")
-
-if __name__ == "__main__":
-    # Create event loop for async operations
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(main())
-    finally:
-        loop.close()
